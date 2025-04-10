@@ -46,6 +46,7 @@ def main():
         
         # 2. ZFS pool and dataset setup
         zfs_manager.setup_pool()
+        zfs_manager.create_pool(disk_manager.partitions['zfs'])
         zfs_manager.create_datasets()
         
         # 3. Boot configuration
