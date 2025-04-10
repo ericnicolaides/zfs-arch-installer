@@ -293,7 +293,7 @@ class ZFSManager:
             cmd = [
                 "zfs", "create",
                 "-V", str(swap_size_bytes),
-                "-b", "4K",
+                "-b", "16K",
                 "-o", "compression=zle",
                 "-o", "logbias=throughput",
                 "-o", "sync=always",
@@ -348,17 +348,44 @@ class ZFSManager:
         except subprocess.CalledProcessError as e:
             print(f"Warning: Failed to export pool: {e}")
             return False
-    
+
     def import_pool(self, mount=True):
-        """Import the ZFS pool with options"""
+        """Import the ZFS pool with options, checking if already imported"""
         try:
+            # First check if the pool is already imported
+            check_cmd = ["zpool", "list", "-H", "-o", "name", self.pool_name]
+            result = subprocess.run(
+                check_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False # Don't raise exception if pool doesn't exist
+            )
+
+            # If the return code is 0 and output matches pool name, it's already imported
+            if result.returncode == 0 and result.stdout.strip() == self.pool_name:
+                print(f"ZFS pool '{self.pool_name}' is already imported.")
+                # If mount=True is requested, ensure datasets are mounted
+                if mount:
+                    try:
+                        # Mount all datasets within the pool
+                        subprocess.run(["zfs", "mount", "-a"], check=True)
+                        print(f"Ensured all datasets in '{self.pool_name}' are mounted.")
+                    except subprocess.CalledProcessError as mount_e:
+                        # Ignore "already mounted" errors, raise others
+                        if "filesystem already mounted" not in str(mount_e):
+                             print(f"Warning: Error ensuring datasets are mounted: {mount_e}")
+                return True
+
+            # Pool is not imported, proceed with import command
+            print(f"Attempting to import ZFS pool '{self.pool_name}'...")
             cmd = ["zpool", "import", "-d", "/dev/disk/by-id", "-f"]
             if not mount:
-                cmd.append("-N")
+                cmd.append("-N") # Don't mount filesystems after import
             cmd.append(self.pool_name)
-            
+
             if self.encryption:
-                # For encryption, we need to provide the passphrase
+                # For encryption, we need to provide the passphrase via stdin
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.PIPE,
@@ -366,16 +393,35 @@ class ZFSManager:
                     stderr=subprocess.PIPE,
                     text=True
                 )
+                # Provide passphrase + newline
                 stdout, stderr = proc.communicate(input=self.encryption_passphrase + "\n")
-                
+
                 if proc.returncode != 0:
-                    raise Exception(f"Failed to import encrypted ZFS pool: {stderr}")
+                    # Check if the error is because the pool was already imported (handle race condition)
+                    if "a pool with that name already exists" in stderr:
+                         print(f"ZFS pool '{self.pool_name}' was already imported (detected during import).")
+                         return True
+                    else:
+                        raise Exception(f"Failed to import encrypted ZFS pool: {stderr.strip()}")
             else:
-                subprocess.run(cmd, check=True)
-            
+                 # For non-encrypted pools
+                 import_result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                 if import_result.returncode != 0:
+                     # Check if the error is because the pool was already imported
+                     if "a pool with that name already exists" in import_result.stderr:
+                         print(f"ZFS pool '{self.pool_name}' was already imported (detected during import).")
+                         return True
+                     else:
+                          raise subprocess.CalledProcessError(
+                              import_result.returncode, cmd, output=import_result.stdout, stderr=import_result.stderr
+                          )
+
             print(f"ZFS pool '{self.pool_name}' imported successfully.")
             return True
-            
+
         except Exception as e:
-            print(f"Warning: Failed to import pool: {e}")
-            return False 
+            print(f"ERROR: Failed to import or check pool '{self.pool_name}': {e}")
+            # Optionally print traceback if in debug mode (assuming args.debug exists)
+            # import traceback
+            # traceback.print_exc()
+            return False
