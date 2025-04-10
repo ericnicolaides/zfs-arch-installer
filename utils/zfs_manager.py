@@ -248,6 +248,10 @@ class ZFSManager:
         self._create_dataset(f"{self.pool_name}/var/cache", "mountpoint=/var/cache")
         
         # Create swap volume if requested
+        # Ensure swap_size is an integer before comparison
+        if isinstance(self.swap_size, str):
+            self.swap_size = int(self.swap_size)
+            
         if self.swap_size > 0:
             self._create_swap_zvol()
         
